@@ -21,15 +21,21 @@ jobs:
           import re
           from pathlib import Path
 
-          bundle = Path("bundle-4-Sapp-fixed.txt")
-          if not bundle.exists():
-              raise SystemExit("bundle-4-Sapp-fixed.txt is missing")
+          candidates = ["bundle-4-Sapp-fixed.txt", "Sapp-project.txt"]
+          bundle = None
+          for c in candidates:
+              if Path(c).exists():
+                  bundle = Path(c)
+                  break
+
+          if bundle is None:
+              raise SystemExit("Neither bundle-4-Sapp-fixed.txt nor Sapp-project.txt found.")
 
           text = bundle.read_text(encoding="utf-8")
           parts = re.split(r'^=====(FILE|B64) (.+?)=====\n', text, flags=re.M)
 
           if len(parts) < 4:
-              raise SystemExit("Invalid bundle file format")
+              raise SystemExit(f"Invalid bundle format in {bundle.name}")
 
           count = 0
           for i in range(1, len(parts), 3):
@@ -61,7 +67,7 @@ jobs:
               if not Path(path).exists():
                   raise SystemExit(f"Missing required file: {path}")
 
-          print(f"Extracted {count} project files successfully.")
+          print(f"Extracted {count} project files successfully from {bundle.name}.")
           PY
 
       - name: Set up Java 17
@@ -97,6 +103,6 @@ jobs:
       - name: Upload Sapp APK
         uses: actions/upload-artifact@v4
         with:
-          name: Sapp-standalone-apk
+          name: Sapp-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
