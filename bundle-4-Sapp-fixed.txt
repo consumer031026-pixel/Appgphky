@@ -22,14 +22,6 @@ android {
         versionCode 1
         versionName '1.0'
     }
-    signingConfigs {
-        debug {
-            storeFile file('planner.jks')
-            storePassword 'planner123'
-            keyAlias 'planner'
-            keyPassword 'planner123'
-        }
-    }
     buildFeatures { buildConfig true }
     buildTypes {
         release {
@@ -43,6 +35,7 @@ android {
     }
 }
 dependencies {
+    implementation 'androidx.core:core:1.15.0'
     implementation 'androidx.webkit:webkit:1.12.1'
 }
 =====FILE app/proguard-rules.pro=====
@@ -107,7 +100,6 @@ import android.app.AlarmManager;
 import android.app.NotificationManager;
 import android.content.ContentValues;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -118,7 +110,6 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
@@ -646,7 +637,6 @@ nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stro
 .toast{pointer-events:auto;display:flex;align-items:center;gap:10px;background:var(--ink);color:var(--bg);border-radius:16px;padding:12px 14px;font-weight:600;font-size:14px}
 .toast span{flex:1}
 
-/* Samsung Calculator Layout */
 .calc-disp{background:var(--card);border-radius:20px;padding:16px;min-height:96px;text-align:right}
 .calc-disp .tape{color:var(--mut);font-size:15px;min-height:22px;overflow-x:auto;white-space:nowrap}
 .calc-disp .main-val{font-size:36px;font-weight:700;overflow-x:auto}
@@ -658,11 +648,9 @@ nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stro
 .ck.w2{grid-column:span 2}
 .ck.w3{grid-column:span 3}
 
-/* Unit Converter */
 .convrow{display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:center}
 .convswap{width:40px;height:40px;border-radius:14px;background:var(--card);display:grid;place-items:center}
 
-/* Vault Grid */
 .vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .vgrid button{aspect-ratio:1;border-radius:16px;overflow:hidden;background:var(--card);padding:0;position:relative}
 .vgrid img{width:100%;height:100%;object-fit:cover;display:block}
@@ -917,7 +905,7 @@ function vaultSheet(){
   '<label class="chip" style="position:relative;overflow:hidden;text-align:center">Add PDF Document<input type="file" id="v-file-pdf" accept="application/pdf" multiple style="position:absolute;inset:0;opacity:0"></label></div>'+
   (fl.length?'<div class="vgrid">'+fl.map(function(it){
     if(it.type==='pdf'){
-      return '<button data-a="vview" data-id="'+it.id+'"><div class="doc-badge">PDF<br>'+esc(it.title||'Document')+'</div></button>';
+      return '<button data-a="vview" data-id="it.id"><div class="doc-badge">PDF<br>'+esc(it.title||'Document')+'</div></button>';
     }
     return '<button data-a="vview" data-id="'+it.id+'"><img data-vid="'+it.id+'" alt=""></button>';
   }).join('')+'</div>':'<div class="card sub empty">No matching files stored in the vault.</div>')+
@@ -1473,53 +1461,6 @@ window.addEventListener('pagehide',window.__flush);
 </script>
 </body>
 </html>
-=====B64 app/planner.jks=====
-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
-dungCNrSjyU9MCHBEvl5J8YCAicQ
 =====B64 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png=====
 iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAADrD0lEQVR42uz9dZxc93X/jz8vztzB
 nWXQspjZkmWQQbbMMSdu0KE20DZp4jZN2qRN0yQNNA2zA07SGOPEDDJIFstiWMEyw+wO04XfH/fO
