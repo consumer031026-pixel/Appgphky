@@ -1,0 +1,1590 @@
+=====FILE settings.gradle=====
+pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = "Sapp"
+include ':app'
+=====FILE build.gradle=====
+plugins { id 'com.android.application' version '8.7.3' apply false }
+=====FILE gradle.properties=====
+android.useAndroidX=true
+=====FILE app/build.gradle=====
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.sapp.planner'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.sapp.planner'
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+    signingConfigs {
+        debug {
+            storeFile file('planner.jks')
+            storePassword 'planner123'
+            keyAlias 'planner'
+            keyPassword 'planner123'
+        }
+    }
+    buildFeatures { buildConfig true }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+}
+=====FILE app/proguard-rules.pro=====
+-keepclassmembers class com.sapp.planner.MainActivity$Bridge {
+    @android.webkit.JavascriptInterface <methods>;
+}
+=====FILE app/src/main/res/xml/file_paths.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="camera_photos" path="." />
+    <external-path name="external_files" path="." />
+</paths>
+=====FILE app/src/main/AndroidManifest.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
+    <application
+        android:label="Sapp"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.sapp.planner.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <activity android:name=".MainActivity" android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <receiver android:name=".ReminderReceiver" android:exported="false"/>
+        <receiver android:name=".ReminderReceiver$Boot" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
+        </receiver>
+    </application>
+</manifest>
+=====FILE app/src/main/java/com/sapp/planner/MainActivity.java=====
+package com.sapp.planner;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.NotificationManager;
+import android.content.ContentValues;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.Insets;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.PowerManager;
+import android.provider.MediaStore;
+import android.provider.Settings;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import androidx.core.content.FileProvider;
+import androidx.webkit.WebViewAssetLoader;
+
+import java.io.File;
+import java.io.OutputStream;
+
+public class MainActivity extends Activity {
+    static final String HOST = "appassets.androidplatform.net";
+    static volatile boolean fg = false;
+
+    private WebView web;
+    private ValueCallback<Uri[]> picker;
+    private Uri cameraImageUri;
+
+    @Override
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        ReminderReceiver.channels(this);
+        if (Build.VERSION.SDK_INT >= 33
+            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, 2);
+        }
+
+        web = new WebView(this);
+        web.setBackgroundColor(Color.parseColor("#f4f4f6"));
+        setContentView(web);
+
+        web.setOnApplyWindowInsetsListener((v, ins) -> {
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets sysBars = ins.getInsets(WindowInsets.Type.systemBars());
+                Insets ime = ins.getInsets(WindowInsets.Type.ime());
+                int bottomPadding = Math.max(sysBars.bottom, ime.bottom);
+                v.setPadding(sysBars.left, sysBars.top, sysBars.right, bottomPadding);
+            } else {
+                v.setPadding(ins.getSystemWindowInsetLeft(), ins.getSystemWindowInsetTop(),
+                    ins.getSystemWindowInsetRight(), ins.getSystemWindowInsetBottom());
+            }
+            return ins;
+        });
+
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setAllowFileAccess(true);
+        s.setAllowContentAccess(true);
+        s.setSupportZoom(false);
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        web.setOverScrollMode(WebView.OVER_SCROLL_NEVER);
+        web.addJavascriptInterface(new Bridge(), "Android");
+
+        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this)).build();
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                return loader.shouldInterceptRequest(r.getUrl());
+            }
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                return !HOST.equals(r.getUrl().getHost());
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
+                if (picker != null) picker.onReceiveValue(null);
+                picker = cb;
+
+                boolean isCapture = p.isCaptureEnabled();
+                try {
+                    if (isCapture) {
+                        File cachePath = new File(getCacheDir(), "images");
+                        cachePath.mkdirs();
+                        File photoFile = new File(cachePath, "scan_" + System.currentTimeMillis() + ".jpg");
+                        cameraImageUri = FileProvider.getUriForFile(MainActivity.this, "com.sapp.planner.fileprovider", photoFile);
+                        Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                        takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri);
+                        startActivityForResult(takePictureIntent, 100);
+                        return true;
+                    }
+                    Intent intent = p.createIntent();
+                    startActivityForResult(intent, 101);
+                    return true;
+                } catch (Exception e) {
+                    if (picker != null) {
+                        picker.onReceiveValue(null);
+                        picker = null;
+                    }
+                    return false;
+                }
+            }
+        });
+
+        web.loadUrl("https://" + HOST + "/assets/index.html");
+    }
+
+    @Override
+    protected void onActivityResult(int rq, int rs, Intent d) {
+        if (picker == null) return;
+        if (rq == 100) {
+            if (rs == RESULT_OK && cameraImageUri != null) {
+                picker.onReceiveValue(new Uri[]{cameraImageUri});
+            } else {
+                picker.onReceiveValue(null);
+            }
+            picker = null;
+        } else if (rq == 101) {
+            picker.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(rs, d));
+            picker = null;
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        fg = true;
+    }
+
+    @Override
+    protected void onPause() {
+        fg = false;
+        if (web != null) web.evaluateJavascript("window.__flush&&__flush()", null);
+        super.onPause();
+    }
+
+    private void toast(final String m) {
+        runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show());
+    }
+
+    class Bridge {
+        @JavascriptInterface public boolean isPro() { return true; }
+        @JavascriptInterface public String price() { return "Free"; }
+        @JavascriptInterface public void subscribe() {}
+        @JavascriptInterface public void refresh() {}
+        @JavascriptInterface public void sync(String json) { ReminderReceiver.schedule(MainActivity.this, json); }
+        @JavascriptInterface public void timerStart(double end, String label) {
+            ReminderReceiver.timer(MainActivity.this, (long) end, label);
+        }
+        @JavascriptInterface public void timerCancel() { ReminderReceiver.cancelTimer(MainActivity.this); }
+        @JavascriptInterface public void welcome(String t, String b) {
+            ReminderReceiver.show(MainActivity.this, 7001, t, b, false);
+        }
+        @JavascriptInterface public String tones() { return ReminderReceiver.tones(MainActivity.this); }
+        @JavascriptInterface public void setTones(String timerUri, String notifUri) { 
+            ReminderReceiver.setTones(MainActivity.this, timerUri, notifUri); 
+        }
+        @JavascriptInterface public String statusTones() { return ReminderReceiver.statusTones(MainActivity.this); }
+
+        @JavascriptInterface public String status() {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            boolean n = nm.areNotificationsEnabled();
+            boolean ex = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms();
+            boolean bat = pm.isIgnoringBatteryOptimizations(getPackageName());
+            return "{\"v\":4,\"notif\":" + n + ",\"exact\":" + ex + ",\"battery\":" + bat + "}";
+        }
+
+        @JavascriptInterface public void open(final String what) {
+            runOnUiThread(() -> {
+                try {
+                    Intent i;
+                    String pkg = getPackageName();
+                    if ("notif".equals(what)) {
+                        i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, pkg);
+                    } else if ("battery".equals(what)) {
+                        i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + pkg));
+                    } else if ("exact".equals(what) && Build.VERSION.SDK_INT >= 31) {
+                        i = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + pkg));
+                    } else {
+                        i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg));
+                    }
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(i);
+                } catch (Exception ignored) { }
+            });
+        }
+
+        @JavascriptInterface public void setBars(final String hex, final boolean dark) {
+            runOnUiThread(() -> {
+                try {
+                    int c = Color.parseColor(hex);
+                    getWindow().getDecorView().setBackgroundColor(c);
+                    web.setBackgroundColor(c);
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        WindowInsetsController wc = getWindow().getInsetsController();
+                        if (wc != null) {
+                            int m = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                            wc.setSystemBarsAppearance(dark ? 0 : m, m);
+                        }
+                    }
+                } catch (Exception ignored) { }
+            });
+        }
+
+        @JavascriptInterface public void saveIcs(String name, String text) {
+            try {
+                if (Build.VERSION.SDK_INT < 29) { toast("Requires Android 10+"); return; }
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                v.put(MediaStore.Downloads.MIME_TYPE, "text/calendar");
+                v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                OutputStream o = getContentResolver().openOutputStream(u);
+                o.write(text.getBytes("UTF-8"));
+                o.close();
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(u, "text/calendar");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } catch (Exception e) {
+                toast("Saved to Downloads.");
+            }
+        }
+    }
+}
+=====FILE app/src/main/java/com/sapp/planner/ReminderReceiver.java=====
+package com.sapp.planner;
+
+import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
+import android.net.Uri;
+import android.os.Build;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+public class ReminderReceiver extends BroadcastReceiver {
+    static final String CH_ALARM = "alarm_sapp_1";
+    static final String CH_INFO = "info_sapp_1";
+    static final int TIMER_ID = 9001;
+
+    static Uri toneUri(Context c, String key, int type) {
+        String s = c.getSharedPreferences("r", Context.MODE_PRIVATE).getString(key, "");
+        if (s != null && !s.isEmpty()) {
+            try { return Uri.parse(s); } catch (Exception ignored) { }
+        }
+        return RingtoneManager.getDefaultUri(type);
+    }
+
+    static void channels(Context c) {
+        if (Build.VERSION.SDK_INT < 26) return;
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+        AudioAttributes aa = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
+        NotificationChannel a = new NotificationChannel(CH_ALARM, "Timer and reminders", NotificationManager.IMPORTANCE_HIGH);
+        a.setSound(toneUri(c, "timerTone", RingtoneManager.TYPE_ALARM), aa);
+        a.enableVibration(true);
+        a.setVibrationPattern(new long[]{0, 500, 250, 500, 250, 500});
+        nm.createNotificationChannel(a);
+        NotificationChannel i = new NotificationChannel(CH_INFO, "Notifications", NotificationManager.IMPORTANCE_DEFAULT);
+        i.setSound(toneUri(c, "notifTone", RingtoneManager.TYPE_NOTIFICATION), aa);
+        nm.createNotificationChannel(i);
+    }
+
+    static String tones(Context c) {
+        JSONArray out = new JSONArray();
+        Cursor cur = null;
+        try {
+            cur = RingtoneManager.getCursor(c, RingtoneManager.TYPE_NOTIFICATION);
+            while (cur.moveToNext()) {
+                String title = cur.getString(RingtoneManager.TITLE_COLUMN_INDEX);
+                String uri = cur.getString(RingtoneManager.URI_COLUMN_INDEX);
+                String id = cur.getString(RingtoneManager.ID_COLUMN_INDEX);
+                JSONObject o = new JSONObject();
+                o.put("title", title == null ? "Notification Sound" : title);
+                o.put("uri", uri + "/" + id);
+                out.put(o);
+            }
+        } catch (Exception ignored) {
+        } finally { if (cur != null) cur.close(); }
+        return out.toString();
+    }
+
+    static String statusTones(Context c) {
+        SharedPreferences sp = c.getSharedPreferences("r", Context.MODE_PRIVATE);
+        return "{\"timer\":"+JSONObject.quote(sp.getString("timerTone", ""))+ ",\"notif\":"+JSONObject.quote(sp.getString("notifTone", ""))+"}";
+    }
+
+    static void setTones(Context c, String timerUri, String notifUri) {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            nm.deleteNotificationChannel(CH_ALARM);
+            nm.deleteNotificationChannel(CH_INFO);
+        }
+        c.getSharedPreferences("r", Context.MODE_PRIVATE).edit()
+            .putString("timerTone", timerUri == null ? "" : timerUri)
+            .putString("notifTone", notifUri == null ? "" : notifUri).apply();
+        channels(c);
+    }
+
+    static void show(Context c, int id, String title, String body, boolean alarm) {
+        channels(c);
+        if (body == null) body = "";
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+        Notification.Builder b;
+        if (Build.VERSION.SDK_INT >= 26) {
+            b = new Notification.Builder(c, alarm ? CH_ALARM : CH_INFO);
+        } else {
+            b = new Notification.Builder(c);
+            if (alarm) {
+                b.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM));
+                b.setVibrate(new long[]{0, 500, 250, 500, 250, 500});
+                b.setPriority(Notification.PRIORITY_HIGH);
+            }
+        }
+        PendingIntent open = PendingIntent.getActivity(c, 0, new Intent(c, MainActivity.class),
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        b.setSmallIcon(com.sapp.planner.R.drawable.ic_notification)
+         .setContentTitle(title)
+         .setContentText(body)
+         .setStyle(new Notification.BigTextStyle().bigText(body))
+         .setAutoCancel(true)
+         .setContentIntent(open);
+        if (alarm) b.setCategory(Notification.CATEGORY_ALARM);
+        nm.notify(id, b.build());
+    }
+
+    static PendingIntent pi(Context c, int id, String kind, String t, String b) {
+        Intent i = new Intent(c, ReminderReceiver.class);
+        i.putExtra("k", kind);
+        i.putExtra("t", t);
+        i.putExtra("b", b);
+        i.putExtra("i", id);
+        return PendingIntent.getBroadcast(c, id, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    static void arm(Context c, long at, PendingIntent p) {
+        AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+        try {
+            if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, p);
+            } else {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, p);
+            }
+        } catch (SecurityException e) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, p);
+        }
+    }
+
+    static void timer(Context c, long end, String label) {
+        arm(c, end, pi(c, TIMER_ID, "timer", label + " completed", "Time is up. Take a break."));
+    }
+
+    static void cancelTimer(Context c) {
+        AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+        am.cancel(pi(c, TIMER_ID, "timer", "", ""));
+    }
+
+    static void schedule(Context c, String json) {
+        try {
+            AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+            SharedPreferences sp = c.getSharedPreferences("r", Context.MODE_PRIVATE);
+            int old = sp.getInt("n", 0);
+            for (int i = 0; i < old; i++) am.cancel(pi(c, i, "rem", "", ""));
+            JSONArray a = new JSONArray(json);
+            int n = Math.min(a.length(), 60);
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < n; i++) {
+                JSONObject o = a.getJSONObject(i);
+                long at = o.getLong("at");
+                if (at > now) arm(c, at, pi(c, i, "rem", o.getString("t"), o.optString("b", "")));
+            }
+            sp.edit().putInt("n", n).putString("json", json).apply();
+        } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void onReceive(Context c, Intent i) {
+        String k = i.getStringExtra("k");
+        if ("timer".equals(k) && MainActivity.fg) return;
+        show(c, i.getIntExtra("i", 0), i.getStringExtra("t"), i.getStringExtra("b"), true);
+    }
+
+    public static class Boot extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context c, Intent i) {
+            schedule(c, c.getSharedPreferences("r", Context.MODE_PRIVATE).getString("json", "[]"));
+        }
+    }
+}
+=====FILE app/src/main/res/drawable/ic_notification.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M19,3H18V1h-2v2H8V1H6v2H5C3.89,3 3,3.9 3,5v14c0,1.1 0.89,2 2,2h14c1.1,0 2,-0.9 2,-2V5C21,3.9 20.1,3 19,3z M19,19H5V8h14V19z M9.5,14.5l-2,-2L6,14l3.5,3.5L18,9l-1.5,-1.5L9.5,14.5z"/>
+</vector>
+=====FILE app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml=====
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/black"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+</adaptive-icon>
+=====FILE app/src/main/assets/index.html=====
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Sapp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4f4f6;--card:#ebebee;--pill:#fff;--ink:#101013;--mut:#7a7a85;--track:#dcdce1;--g:#2fa35b;--r:#e0483b;--b:#3b6cf0;box-sizing:border-box}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d0d10;--card:#1a1a1f;--pill:#26262c;--ink:#f3f3f6;--mut:#9b9ba7;--track:#2e2e35;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d0d10;--card:#1a1a1f;--pill:#26262c;--ink:#f3f3f6;--mut:#9b9ba7;--track:#2e2e35;color-scheme:dark}
+:root[data-skin="light"]{--bg:#f4f4f6;--card:#ebebee;--pill:#fff;--ink:#101013;--mut:#7a7a85;--track:#dcdce1;color-scheme:light}
+:root[data-skin="dark"]{--bg:#0d0d10;--card:#1a1a1f;--pill:#26262c;--ink:#f3f3f6;--mut:#9b9ba7;--track:#2e2e35;color-scheme:dark}
+:root[data-skin="ocean"]{--bg:#0b1b2b;--card:#12293f;--pill:#1b3a58;--ink:#eaf4ff;--mut:#8fb0cc;--track:#24465f;--b:#38a3ff;--g:#34c38f;--r:#ff6b6b;color-scheme:dark}
+:root[data-skin="forest"]{--bg:#0e1912;--card:#16261c;--pill:#203428;--ink:#e9f5ec;--mut:#8fb09a;--track:#2a4435;--b:#5fbf7a;--g:#4cd07d;--r:#ff7a6b;color-scheme:dark}
+:root[data-skin="sunset"]{--bg:#fff1e6;--card:#ffdfc9;--pill:#fffaf6;--ink:#2b1a14;--mut:#8a6a5c;--track:#f2c9b2;--b:#ff6a3d;--g:#2fa35b;--r:#d93b2f;color-scheme:light}
+:root[data-skin="lavender"]{--bg:#f2efff;--card:#e5deff;--pill:#fbfaff;--ink:#1d1635;--mut:#756c99;--track:#d3c9f6;--b:#7b5cf0;--g:#2fa35b;--r:#e0483b;color-scheme:light}
+html{touch-action:manipulation;-webkit-text-size-adjust:100%}
+*{box-sizing:border-box;margin:0}
+body{font-family:'Manrope',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+main{max-width:580px;margin:0 auto;padding:12px 16px 110px}
+#app>*+*{margin-top:14px}
+h1{font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.15}
+h2{font-size:20px;font-weight:700}
+.sub,.lbl{color:var(--mut);font-size:14px}
+.lbl{display:block;font-size:16px;color:var(--mut);margin-top:18px!important;margin-bottom:-4px}
+.card{background:var(--card);border-radius:24px;padding:16px}
+.grid{display:grid;gap:12px}
+.row{display:flex;align-items:center;gap:10px}
+.sp{justify-content:space-between}
+.sec{margin-top:24px!important;align-items:baseline}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button:active{transform:scale(.96)}
+input,select,textarea{font:inherit;color:inherit;width:100%;border:0;outline:0;background:var(--card);border-radius:18px;padding:14px 16px;font-size:16px}
+input.cap{text-transform:uppercase}
+input:focus,select:focus,textarea:focus{box-shadow:0 0 0 2px var(--b)}
+::placeholder{color:var(--mut)}
+.lnk{font-weight:600;font-size:15px;white-space:nowrap;padding:4px 2px}
+.danger{color:var(--r)}
+.empty{text-align:center;padding:24px}
+.circ{width:50px;height:50px;border-radius:50%;display:grid;place-items:center;font-size:24px;line-height:1;flex:none;background:var(--track)}
+.circ.sm{width:36px;height:36px;font-size:16px}
+.gr{background:var(--g);color:#fff}.rd{background:var(--r);color:#fff}.add{background:var(--b);color:#fff}
+.home{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
+.today{grid-row:span 2;display:flex;flex-direction:column;gap:12px}
+.today .t{font-size:22px;font-weight:700}
+.small{display:flex;flex-direction:column;justify-content:flex-end;text-align:left;gap:2px;min-height:92px}
+.prow{padding:12px 14px;gap:10px}
+.pmain{flex:1;min-width:0;text-align:left}
+.pmain b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:8px;border-radius:99px;background:var(--track);overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;border-radius:99px}
+.nrow{text-align:left;width:100%}.nrow b{font-weight:600}
+.gauge{padding:14px 10px 16px;text-align:center}
+.advice{font-weight:600;font-size:15px;padding:0 12px;margin-top:2px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);text-align:center}
+.stats span{display:block;color:var(--mut);font-size:14px}.stats b{font-size:24px;font-weight:600}
+.mark b{font-size:18px;font-weight:600}
+input[type=range]{padding:0;background:none;accent-color:var(--b);height:28px}
+.note{display:grid;gap:10px}
+input.ntitle{background:none;padding:0;font-size:19px;font-weight:700}
+.note textarea{background:var(--pill);resize:vertical;min-height:76px}
+.note input.sin{background:var(--pill);padding:10px 14px;font-size:15px}
+.subs{display:grid;gap:8px;padding-left:10px;border-left:3px solid var(--track)}
+.sn{display:flex;align-items:center;gap:10px;background:var(--pill);border-radius:14px;padding:8px 10px}
+.sn span{flex:1;font-size:15px;overflow-wrap:anywhere}
+.sn.dn span{text-decoration:line-through;color:var(--mut)}
+.chk{width:24px;height:24px;border-radius:8px;border:2px solid var(--mut);display:grid;place-items:center;flex:none;font-size:14px;color:#fff}
+.dn .chk{background:var(--g);border-color:var(--g)}
+.x{color:var(--mut);font-size:20px;width:28px;height:28px;line-height:1}
+
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;padding:10px 14px calc(8px + env(safe-area-inset-bottom,0px));background:linear-gradient(transparent,var(--bg) 45%)}
+nav div{display:flex;gap:4px;background:var(--card);border-radius:999px;padding:6px;width:100%;max-width:480px;box-shadow:0 6px 20px rgba(0,0,0,.08)}
+nav button{flex:1;height:48px;border-radius:999px;display:flex;align-items:center;justify-content:center;gap:6px;font-weight:600;font-size:13px;color:var(--mut);position:relative}
+nav button.on{background:var(--ink);color:var(--bg);flex:2}
+nav button.on span{display:inline}
+nav button span{display:none}
+nav button.hasdot::after{content:"";position:absolute;top:8px;right:12px;width:9px;height:9px;border-radius:50%;background:var(--r);border:2px solid var(--card)}
+nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+.top{display:flex;justify-content:space-between;align-items:center}
+.gear{width:44px;height:44px;border-radius:50%;background:var(--card);display:grid;place-items:center;flex:none}
+.gear svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.evs{display:grid;gap:8px}
+.ev .when{display:block;color:var(--mut);font-size:12px}
+.ev .nm{display:block;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.big{font-size:26px;font-weight:700}
+
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:10}
+.sheet{background:var(--bg);width:100%;max-width:580px;max-height:86vh;overflow-y:auto;border-radius:26px 26px 0 0;padding:20px 16px calc(24px + env(safe-area-inset-bottom,0px));display:grid;gap:12px}
+.sheet.tall{max-height:92vh}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:flex;align-items:center;gap:6px;background:var(--card);border-radius:999px;padding:8px 12px;font-weight:600;font-size:13px;border:2px solid transparent}
+.chip i{width:22px;height:22px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--track)}
+.chip.sel{border-color:var(--b)}
+.go{background:var(--ink);color:var(--bg);border-radius:18px;padding:15px;font-weight:700;text-align:center;width:100%}
+#toasts{position:fixed;top:12px;left:12px;right:12px;z-index:30;display:grid;gap:8px;max-width:540px;margin:0 auto;pointer-events:none}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:10px;background:var(--ink);color:var(--bg);border-radius:16px;padding:12px 14px;font-weight:600;font-size:14px}
+.toast span{flex:1}
+
+/* Samsung Calculator Layout */
+.calc-disp{background:var(--card);border-radius:20px;padding:16px;min-height:96px;text-align:right}
+.calc-disp .tape{color:var(--mut);font-size:15px;min-height:22px;overflow-x:auto;white-space:nowrap}
+.calc-disp .main-val{font-size:36px;font-weight:700;overflow-x:auto}
+.calc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.calc-grid.sci{grid-template-columns:repeat(5,1fr)}
+.ck{height:54px;border-radius:16px;background:var(--card);font-size:18px;font-weight:600}
+.ck.op{background:var(--track);color:var(--ink)}
+.ck.eq{background:var(--b);color:#fff}
+.ck.w2{grid-column:span 2}
+.ck.w3{grid-column:span 3}
+
+/* Unit Converter */
+.convrow{display:grid;grid-template-columns:1fr 40px 1fr;gap:8px;align-items:center}
+.convswap{width:40px;height:40px;border-radius:14px;background:var(--card);display:grid;place-items:center}
+
+/* Vault Grid */
+.vgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.vgrid button{aspect-ratio:1;border-radius:16px;overflow:hidden;background:var(--card);padding:0;position:relative}
+.vgrid img{width:100%;height:100%;object-fit:cover;display:block}
+.vgrid .doc-badge{position:absolute;inset:0;display:grid;place-content:center;font-weight:700;font-size:12px;padding:6px;text-align:center}
+.pv{width:100%;max-height:54vh;object-fit:contain;border-radius:16px;background:var(--card)}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+<main id="app"></main>
+<nav><div>
+  <button data-a="tab" data-t="home" aria-label="Home"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Home</span></button>
+  <button data-a="tab" data-t="att" aria-label="Attendance"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg><span>Attendance</span></button>
+  <button data-a="tab" data-t="proj" aria-label="Projects"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Projects</span></button>
+  <button data-a="tab" data-t="notes" aria-label="Notes"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M9 12h7M9 16h5"/></svg><span>Notes</span></button>
+  <button data-a="tab" data-t="sched" aria-label="Schedule"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Schedule</span></button>
+</div></nav>
+<div id="sheet"></div>
+
+<script>
+(function(){
+var KEY='sapp-data-v1',LK='sapp-lock-v1';
+var S=load(),tab='home',sheet=null,locked=hasLock(),cryptoKey=null,saltB=null,toasts=[];
+var $=function(id){return document.getElementById(id)};
+
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
+function hasLock(){try{return !!localStorage.getItem(LK)}catch(e){return false}}
+
+function norm(d){
+  d=d&&typeof d==='object'?d:{};
+  d.subjects=d.subjects||[];d.notes=d.notes||[];d.projects=d.projects||[];d.events=d.events||[];
+  d.name=d.name||'';d.theme=d.theme||'system';d.scratch=d.scratch||'';d.remind=d.remind||'17:00';
+  d.focusLen=d.focusLen||25;d.focus=d.focus||{date:'',min:0,n:0};d.target=Math.min(90,Math.max(50,d.target||75));
+  d.profile=d.profile||{};d.profileDone=!!d.profileDone;d.welcomed=!!d.welcomed;d.tasks=d.tasks||[];
+  d.vault=d.vault||[];
+  d.gpa=d.gpa||{rows:[{n:'',c:'3',g:'O'}],sems:[]};
+  d.grades=d.grades||{'O':10,'A+':9,'A':8,'B+':7,'B':6,'C':5,'P':4,'F':0};
+  d.calcHistory=d.calcHistory||[];
+  if(!d.subjects.some(function(x){return x.id===d.sel}))d.sel=d.subjects[0]?d.subjects[0].id:null;
+  return d;
+}
+
+function load(){
+  if(hasLock())return norm({});
+  var d=null;try{d=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+  return norm(d);
+}
+
+var svT=null;
+function flush(){svT=null;if(locked)return;if(cryptoKey)saveEnc();else{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}syncNative()}
+function save(){if(locked)return;clearTimeout(svT);svT=setTimeout(flush,200)}
+
+var te=new TextEncoder(),td=new TextDecoder();
+function b64(buf){var u=new Uint8Array(buf),t='',i;for(i=0;i<u.length;i+=8192)t+=String.fromCharCode.apply(null,u.subarray(i,i+8192));return btoa(t)}
+function unb64(t){var r=atob(t),u=new Uint8Array(r.length),i;for(i=0;i<r.length;i++)u[i]=r.charCodeAt(i);return u}
+
+function derive(pin,salt){
+  return crypto.subtle.importKey('raw',te.encode(pin),'PBKDF2',false,['deriveKey']).then(function(km){
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:250000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])})}
+
+function saveEnc(){
+  if(!cryptoKey||locked)return Promise.resolve(false);
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  return crypto.subtle.encrypt({name:'AES-GCM',iv:iv},cryptoKey,te.encode(JSON.stringify(S))).then(function(ct){
+    try{localStorage.setItem(LK,JSON.stringify({s:b64(saltB),i:b64(iv),c:b64(ct)}));return true}catch(e){return false}}).catch(function(){return false})}
+
+function openRec(pin){
+  var rec=JSON.parse(localStorage.getItem(LK)),salt=unb64(rec.s);
+  return derive(pin,salt).then(function(k){
+    return crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(rec.i)},k,unb64(rec.c)).then(function(pt){return{k:k,salt:salt,o:JSON.parse(td.decode(pt))}})})}
+
+var _db=null;
+function idb(){return _db||(_db=new Promise(function(res,rej){var r=indexedDB.open('sapp_vault_db',1);r.onupgradeneeded=function(){r.result.createObjectStore('v')};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}}))}
+function idbOp(mode,fn){return idb().then(function(db){return new Promise(function(res,rej){
+  var tx=db.transaction(['v'],mode),rq;
+  try{rq=fn(tx.objectStore('v'))}catch(e){rej(e);return}
+  var done=false,result;
+  if(rq){rq.onsuccess=function(){result=rq.result};rq.onerror=function(){rej(rq.error)}}
+  tx.oncomplete=function(){if(!done){done=true;res(result)}};
+  tx.onerror=tx.onabort=function(){if(!done){done=true;rej(tx.error||new Error('IDB fail'))}};
+})})}
+function idbGet(k){return idbOp('readonly',function(st){return st.get(k)})}
+function idbSet(k,v){return idbOp('readwrite',function(st){return st.put(v,k)})}
+function idbDel(k){return idbOp('readwrite',function(st){return st.delete(k)})}
+
+function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function p2(n){return (n<10?'0':'')+n}
+function fmtDate(v){
+  if(!v)return '';
+  var s=String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)){
+    var p=s.split('T')[0].split('-');
+    return p[2]+'/'+p[1]+'/'+p[0];
+  }
+  var d=new Date(s);
+  if(!isNaN(d.getTime())){
+    return p2(d.getDate())+'/'+p2(d.getMonth()+1)+'/'+d.getFullYear();
+  }
+  return s;
+}
+function ymd(d){return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())}
+function hm(d){return p2(d.getHours())+':'+p2(d.getMinutes())}
+
+function pc(p,a){var t=p+a;return t?p/t*100:null}
+function f(n){return String(Number(n.toFixed(1)))}
+function col(v){return v===null?'var(--mut)':v>=S.target?'var(--g)':'var(--r)'}
+function cur(){return S.subjects.find(function(x){return x.id===S.sel})}
+
+function toast(m){
+  toasts.push(m);if(toasts.length>4)toasts.shift();drawToasts();
+  setTimeout(function(){var i=toasts.indexOf(m);if(i>=0){toasts.splice(i,1);drawToasts()}},4000);
+}
+function drawToasts(){
+  var t=$('toasts');if(t)t.innerHTML=toasts.map(function(m,i){return '<div class="toast"><span>'+esc(m)+'</span><button data-a="closetoast" data-i="'+i+'">×</button></div>'}).join('');
+}
+
+var tmr={run:false,done:false,left:S.focusLen*60,end:0,iv:null};
+function tick(){
+  var l=Math.ceil((tmr.end-Date.now())/1000);
+  if(l<=0){
+    clearInterval(tmr.iv);tmr.run=false;tmr.done=true;tmr.left=S.focusLen*60;
+    try{if(window.Android&&Android.timerCancel)Android.timerCancel()}catch(e){}
+    toast('Focus session completed!');render();return;
+  }
+  tmr.left=l;var e=$('tmv');if(e)e.textContent=p2(Math.floor(l/60))+':'+p2(l%60);
+}
+
+function syncNative(){
+  try{
+    if(!window.Android||!Android.sync||locked)return;
+    var now=Date.now(),l=[];
+    S.events.forEach(function(e){
+      var d=new Date(e.date+'T00:00');d.setDate(d.getDate()-1);
+      var q=(S.remind||'17:00').split(':');d.setHours(+q[0]||17,+q[1]||0,0,0);
+      var t=d.getTime();
+      if(t>now)l.push({t:(e.kind||'Event')+' tomorrow: '+e.title,b:fmtDate(e.date)+'\nSapp reminder',at:t});
+    });
+    Android.sync(JSON.stringify(l));
+  }catch(e){}
+}
+
+function upcoming(){
+  var now=ymd(new Date())+' '+hm(new Date());
+  return S.events.filter(function(e){return e.date+' '+(e.time||'23:59')>=now})
+    .sort(function(a,b){return (a.date+(a.time||'00:00')).localeCompare(b.date+(b.time||'00:00'))});
+}
+
+function home(){
+  var ev=upcoming().slice(0,3);
+  var o='<div class="top"><div><p class="sub">Welcome back,</p><h1>'+esc(S.name||'Student')+'!</h1></div>'+
+  '<div class="row"><button class="gear" data-a="opensheet" data-t="settings" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></div>'+
+  '<div class="home"><div class="card today"><div><div class="t">Today</div><div class="sub">'+fmtDate(ymd(new Date()))+'</div></div>'+
+  '<div class="evs">'+(ev.length?ev.map(function(e){return '<div class="ev"><span class="when">'+fmtDate(e.date)+' '+(e.time||'')+'</span><span class="nm">'+esc(e.title)+'</span></div>'}).join(''):'<span class="sub">No upcoming events</span>')+'</div>'+
+  '<button class="lnk" data-a="opensheet" data-t="events">+ Add event</button></div>'+
+  '<div class="card small"><button class="tbtn" data-a="timer"><span>Focus timer</span><b class="big" id="tmv">'+p2(Math.floor(tmr.left/60))+':'+p2(tmr.left%60)+'</b><span>'+(tmr.run?'Tap to pause':'Tap to start')+'</span></button></div>'+
+  '<div class="card small"><span>Quick scratchpad</span><textarea id="qn" rows="2" placeholder="Note down quick ideas…">'+esc(S.scratch)+'</textarea></div></div>'+
+  '<div class="row sp sec"><h2>Tools</h2></div><div class="grid" style="grid-template-columns:repeat(2,1fr)">'+
+  '<button class="card nrow" data-a="opensheet" data-t="calc"><b>Calculator</b><span class="sub">Samsung-style + Converters</span></button>'+
+  '<button class="card nrow" data-a="opensheet" data-t="vault"><b>Vault (Photos & PDFs)</b><span class="sub">'+S.vault.length+' stored offline</span></button>'+
+  '<button class="card nrow" data-a="opensheet" data-t="gpa"><b>SGPA / CGPA</b><span class="sub">Calculate grades</span></button>'+
+  '<button class="card nrow" data-a="opensheet" data-t="backup"><b>Backup & Restore</b><span class="sub">Import/Export data</span></button></div>'+
+  '<div class="row sp sec"><h2>Projects</h2><button class="lnk" data-a="tab" data-t="proj">+ Add</button></div><div class="grid">'+
+  (S.projects.length?S.projects.slice(0,3).map(function(p){
+    var dn=p.subs.filter(function(x){return x.done}).length,t=p.subs.length,pr=t?Math.round(dn/t*100):0;
+    return '<button class="card nrow" data-a="tab" data-t="proj"><div class="row sp"><b>'+esc(p.name)+'</b><span class="sub">'+pr+'%</span></div>'+
+    '<div class="bar"><i style="width:'+pr+'%;background:var(--ink)"></i></div><span class="due">'+(p.due?'Due '+fmtDate(p.due):'No deadline')+'</span></button>'}).join('')
+  :'<div class="card sub empty">No projects created yet.</div>')+'</div>';
+  return o;
+}
+
+function att(){
+  var s=cur(),o='<h1>Attendance</h1>';
+  if(s){
+    var v=pc(s.present,s.absent),t=s.present+s.absent,c=col(v);
+    o+='<div class="card gauge"><b style="font-size:38px;color:'+c+'">'+(v===null?'–':f(v)+'%')+'</b><p class="sub">Target: '+S.target+'%</p></div>'+
+    '<div class="card stats"><div><span>Present</span><b>'+s.present+'</b></div><div><span>Absent</span><b>'+s.absent+'</b></div><div><span>Total</span><b>'+t+'</b></div></div>'+
+    '<select id="sel">'+S.subjects.map(function(x){return '<option value="'+x.id+'"'+(x.id===s.id?' selected':'')+'>'+esc(x.name)+'</option>'}).join('')+'</select>';
+  }
+  o+='<div class="row"><input id="nm" placeholder="New subject name" maxlength="40"><button class="circ add" data-a="addsub">+</button></div>';
+  if(!s)return o+'<div class="card sub empty">Add a subject to track attendance.</div>';
+  o+='<div class="card row sp mark"><div><b>Mark Present</b><div class="sub">'+s.present+' attended</div></div>'+
+  '<div class="row"><button class="circ" data-a="dec" data-k="present">−</button><button class="circ gr" data-a="inc" data-k="present">+</button></div></div>'+
+  '<div class="card row sp mark"><div><b>Mark Absent</b><div class="sub">'+s.absent+' missed</div></div>'+
+  '<div class="row"><button class="circ" data-a="dec" data-k="absent">−</button><button class="circ rd" data-a="inc" data-k="absent">+</button></div></div>'+
+  '<div style="text-align:center"><button class="lnk danger" data-a="delsub">Delete this subject</button></div>';
+  return o;
+}
+
+function notes(){
+  var o='<h1>Notes & Syllabus</h1><div class="row"><input id="nt" placeholder="New note title" maxlength="80"><button class="circ add" data-a="addnote">+</button>'+
+  '<label class="circ add" style="position:relative;overflow:hidden" title="Camera Scan"><svg viewBox="0 0 24 24" style="width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg><input type="file" id="cam-scan" accept="image/*" capture="environment" style="position:absolute;inset:0;opacity:0"></label>'+
+  '<label class="circ add" style="position:relative;overflow:hidden" title="Upload Image Scan"><svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><input type="file" id="img-scan" accept="image/*" style="position:absolute;inset:0;opacity:0"></label></div>';
+  
+  o+='<div class="card note"><b>Paste Syllabus / Curriculum Text</b><p class="sub">Paste units, subtopics and [ ] brackets directly here to create checklist notes.</p>'+
+  '<textarea id="syl-text" rows="3" placeholder="e.g. 1. EC: Chemistry [ ] Unit 1: Water..."></textarea><button class="chip" data-a="parsetext">Auto-Generate Checklist</button></div>';
+
+  if(!S.notes.length)o+='<div class="card sub empty">No notes or syllabi created yet.</div>';
+  S.notes.forEach(function(n){
+    var id=n.id;
+    o+='<div class="card note"><input class="ntitle" data-f="title" data-id="'+id+'" value="'+esc(n.title)+'" placeholder="Title">'+
+    '<textarea data-f="body" data-id="'+id+'" rows="2" placeholder="Details">'+esc(n.body)+'</textarea>'+
+    (n.subs.length?'<div class="subs">'+n.subs.map(function(x){
+      return '<div class="sn'+(x.done?' dn':'')+'"><button class="chk" data-a="tog" data-id="'+id+'" data-s="'+x.id+'">'+(x.done?'✓':'')+'</button><span>'+esc(x.t)+'</span>'+
+      '<button class="x" data-a="rmsn" data-id="'+id+'" data-s="'+x.id+'">×</button></div>'}).join('')+'</div>':'')+
+    '<div class="row"><input class="sin" data-id="'+id+'" placeholder="Add checklist item" maxlength="90"><button class="circ sm add" data-a="addsn" data-id="'+id+'">+</button></div>'+
+    '<div class="row sp"><span class="sub">'+n.subs.filter(function(x){return x.done}).length+' of '+n.subs.length+' finished</span><button class="lnk danger" data-a="delnote" data-id="'+id+'">Delete</button></div></div>';
+  });
+  return o;
+}
+
+function proj(){
+  var o='<h1>Projects</h1><div class="row"><input id="pn" placeholder="New project name" maxlength="60"><button class="circ add" data-a="addproj">+</button></div>';
+  if(!S.projects.length)o+='<div class="card sub empty">Add a project to track milestones and tasks.</div>';
+  S.projects.forEach(function(p){
+    var id=p.id,dn=p.subs.filter(function(x){return x.done}).length,t=p.subs.length,pr=t?Math.round(dn/t*100):0;
+    o+='<div class="card note"><input class="ntitle" data-c="p" data-f="name" data-id="'+id+'" value="'+esc(p.name)+'" placeholder="Project Name">'+
+    '<div class="row"><span class="sub">Due Date:</span><input class="pd" type="date" data-c="p" data-f="due" data-id="'+id+'" value="'+esc(p.due||'')+'"></div>'+
+    '<div class="bar"><i style="width:'+pr+'%;background:var(--ink)"></i></div>'+
+    (t?'<div class="subs">'+p.subs.map(function(x){
+      return '<div class="sn'+(x.done?' dn':'')+'"><button class="chk" data-a="tog" data-c="p" data-id="'+id+'" data-s="'+x.id+'">'+(x.done?'✓':'')+'</button><span>'+esc(x.t)+'</span>'+
+      '<button class="x" data-a="rmsn" data-c="p" data-id="'+id+'" data-s="'+x.id+'">×</button></div>'}).join('')+'</div>':'')+
+    '<div class="row"><input class="sin" data-c="p" data-id="'+id+'" placeholder="Add milestone/task"><button class="circ sm add" data-a="addsn" data-c="p" data-id="'+id+'">+</button></div>'+
+    '<div style="text-align:right"><button class="lnk danger" data-a="delproj" data-id="'+id+'">Delete</button></div></div>';
+  });
+  return o;
+}
+
+function sched(){
+  var up=upcoming();
+  var o='<h1>Schedule</h1><div class="row"><button class="chip" data-a="opensheet" data-t="events">+ Add event</button>'+
+  '<button class="chip" data-a="exportics">Sync with calendar (.ics)</button></div>';
+  if(!up.length)o+='<div class="card sub empty">No events or tests scheduled.</div>';
+  else o+='<div class="grid">'+up.map(function(e){
+    return '<div class="card"><div class="row sp"><b>'+esc(e.title)+'</b><button class="x" data-a="delev" data-id="'+e.id+'">×</button></div>'+
+    '<span class="sub">'+fmtDate(e.date)+' '+(e.time||'')+' · Reminder at '+esc(S.remind)+'</span></div>';
+  }).join('')+'</div>';
+  return o;
+}
+
+/* Vault (Photos & PDF Storage with Search) */
+var vaultSearchText='';
+function vaultSheet(){
+  var fl=S.vault;
+  if(vaultSearchText){
+    fl=fl.filter(function(x){return (x.title+' '+(x.text||'')).toLowerCase().indexOf(vaultSearchText.toLowerCase())>=0});
+  }
+  return '<h2>Vault (Offline Photos & PDFs)</h2>'+
+  '<p class="sub">Items are saved directly in app database and remain safe even if removed from phone storage.</p>'+
+  '<div class="row"><input id="v-search" placeholder="Search words in documents & titles..." value="'+esc(vaultSearchText)+'">'+
+  '<button class="chip" data-a="vsearchgo">Search</button></div>'+
+  '<div class="two"><label class="chip" style="position:relative;overflow:hidden;text-align:center">Add Photo<input type="file" id="v-file-img" accept="image/*" multiple style="position:absolute;inset:0;opacity:0"></label>'+
+  '<label class="chip" style="position:relative;overflow:hidden;text-align:center">Add PDF Document<input type="file" id="v-file-pdf" accept="application/pdf" multiple style="position:absolute;inset:0;opacity:0"></label></div>'+
+  (fl.length?'<div class="vgrid">'+fl.map(function(it){
+    if(it.type==='pdf'){
+      return '<button data-a="vview" data-id="'+it.id+'"><div class="doc-badge">PDF<br>'+esc(it.title||'Document')+'</div></button>';
+    }
+    return '<button data-a="vview" data-id="'+it.id+'"><img data-vid="'+it.id+'" alt=""></button>';
+  }).join('')+'</div>':'<div class="card sub empty">No matching files stored in the vault.</div>')+
+  '<button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function loadVaultThumbs(){
+  document.querySelectorAll('img[data-vid]').forEach(function(el){
+    idbGet('th_'+el.dataset.vid).then(function(u){if(u)el.src=u});
+  });
+}
+
+var currentVaultId='';
+function vitemSheet(){
+  var it=S.vault.find(function(x){return x.id===currentVaultId});
+  if(!it)return '<h2>Item</h2><button class="lnk" data-a="opensheet" data-t="vault">Back</button>';
+  return '<h2>'+esc(it.title||(it.type==='pdf'?'PDF Document':'Photo'))+'</h2>'+
+  (it.type==='pdf'?'<div class="card">PDF saved offline. <button class="chip" data-a="vdownload" data-id="'+it.id+'">Download / View PDF</button></div>':
+  '<img class="pv" id="pv-view" alt="">')+
+  '<input id="v-edittitle" value="'+esc(it.title||'')+'" placeholder="Document/Photo label">'+
+  '<div class="two"><button class="chip" data-a="vsavetitle">Save Title</button><button class="chip danger" data-a="vdel" data-id="'+it.id+'">Delete</button></div>'+
+  '<button class="lnk" data-a="opensheet" data-t="vault">Back</button>';
+}
+
+/* Samsung Calculator Engine & UI */
+var calc={e:'',r:'0',deg:true,ans:'0',sci:false,historyMode:false};
+var CONVS={
+  Length:{units:['mm','cm','m','km','in','ft','yd','mi'],base:[0.001,0.01,1,1000,0.0254,0.3048,0.9144,1609.344]},
+  Area:{units:['mm²','cm²','m²','km²','in²','ft²','acre'],base:[0.000001,0.0001,1,1000000,0.00064516,0.09290304,4046.856]},
+  Weight:{units:['mg','g','kg','t','oz','lb'],base:[0.000001,0.001,1,1000,0.0283495,0.453592]},
+  Volume:{units:['mL','L','m³','gal','qt','pt'],base:[0.001,1,1000,3.78541,0.946353,0.473176]},
+  Speed:{units:['m/s','km/h','mph','knot'],base:[1,0.277778,0.44704,0.514444]},
+  Time:{units:['ms','s','min','h','day'],base:[0.001,1,60,3600,86400]},
+  Data:{units:['B','KB','MB','GB','TB'],base:[1,1024,1048576,1073741824,1099511627776]},
+  Temperature:{units:['°C','°F','K'],base:null}
+};
+var convState={kind:'Length',from:0,to:1,val:''};
+
+function evalMath(expr){
+  var s=expr.replace(/\s+/g,''),i=0;
+  function primary(){
+    var m,v;
+    if(s[i]==='('){i++;v=expression();if(s[i]===')')i++;return v;}
+    m=/^(\d+\.?\d*|\.\d+)/.exec(s.slice(i));
+    if(m){i+=m[0].length;return parseFloat(m[0]);}
+    m=/^[a-z]+/.exec(s.slice(i));
+    if(m){
+      var fn=m[0];i+=fn.length;
+      if(fn==='pi')return Math.PI;
+      if(fn==='e')return Math.E;
+      if(s[i]!=='(')throw 0;
+      i++;v=expression();if(s[i]===')')i++;
+      var rad=calc.deg?(Math.PI/180):1;
+      if(fn==='sin')return Math.sin(v*rad);
+      if(fn==='cos')return Math.cos(v*rad);
+      if(fn==='tan')return Math.tan(v*rad);
+      if(fn==='ln')return Math.log(v);
+      if(fn==='log')return Math.log10(v);
+      if(fn==='sqrt')return Math.sqrt(v);
+    }
+    throw 0;
+  }
+  function factor(){
+    var v=primary();
+    while(s[i]==='^'||s[i]==='!'){
+      if(s[i]==='^'){i++;v=Math.pow(v,primary());}
+      else if(s[i]==='!'){i++;var f=1;for(var j=2;j<=v;j++)f*=j;v=f;}
+    }
+    return v;
+  }
+  function term(){
+    var v=factor();
+    while(s[i]==='*'||s[i]==='/'||s[i]==='%'){
+      var op=s[i++];var r=factor();
+      v=op==='*'?v*r:op==='/'?v/r:v*(r/100);
+    }
+    return v;
+  }
+  function expression(){
+    var v=term();
+    while(s[i]==='+'||s[i]==='-'){
+      var op=s[i++];var r=term();
+      v=op==='+'?v+r:v-r;
+    }
+    return v;
+  }
+  var res=expression();
+  if(!isFinite(res))throw 0;
+  return res;
+}
+
+function calcSheet(){
+  if(calc.historyMode){
+    return '<h2>Calculator History</h2>'+
+    '<div class="grid" style="max-height:50vh;overflow-y:auto">'+
+    (S.calcHistory.length?S.calcHistory.map(function(h){
+      return '<div class="card"><div>'+esc(h.e)+'</div><b style="font-size:22px">'+esc(h.r)+'</b></div>';
+    }).join(''):'<div class="card sub empty">No calculation history yet.</div>')+
+    '</div><div class="two"><button class="chip" data-a="calchistclear">Clear History</button><button class="chip" data-a="calchistback">Back to Calculator</button></div>';
+  }
+
+  var dspTape=calc.e.replace(/\*/g,'×').replace(/\//g,'÷');
+  var bKeys=[
+    ['C','C','op'],['()','()','op'],['%','%','op'],['÷','/','op'],
+    ['7','7',''],['8','8',''],['9','9',''],['×','*','op'],
+    ['4','4',''],['5','5',''],['6','6',''],['−','-','op'],
+    ['1','1',''],['2','2',''],['3','3',''],['+','+','op'],
+    ['±','NEG',''],['0','0',''],['.','.',''],['=','=','eq']
+  ];
+  var sKeys=[
+    ['DEG',calc.deg?'DEG':'RAD','op'],['sin','sin(','op'],['cos','cos(','op'],['tan','tan(','op'],['C','C','op'],
+    ['ln','ln(','op'],['log','log(','op'],['√','sqrt(','op'],['^','^','op'],['÷','/','op'],
+    ['7','7',''],['8','8',''],['9','9',''],['()','()','op'],['×','*','op'],
+    ['4','4',''],['5','5',''],['6','6',''],['!','!','op'],['−','-','op'],
+    ['1','1',''],['2','2',''],['3','3',''],['%','%','op'],['+','+','op'],
+    ['e','e',''],['0','0',''],['.','.',''],['±','NEG',''],['=','=','eq']
+  ];
+  var ks=calc.sci?sKeys:bKeys;
+
+  return '<h2>Calculator</h2>'+
+  '<div class="calc-disp"><div class="tape">'+esc(dspTape||' ')+'</div><div class="main-val">'+esc(calc.r)+'</div></div>'+
+  '<div class="row sp" style="margin:4px 0">'+
+  '<div class="row"><button class="chip" data-a="calctogsci">'+(calc.sci?'Basic':'Scientific')+'</button>'+
+  '<button class="chip" data-a="calchistview">History</button></div>'+
+  '<button class="chip" data-a="opensheet" data-t="conv">Unit Converter</button></div>'+
+  '<div class="calc-grid'+(calc.sci?' sci':'')+'">'+ks.map(function(k){
+    return '<button class="ck '+k[2]+'" data-a="calckey" data-v="'+k[1]+'">'+k[0]+'</button>';
+  }).join('')+'</div>'+
+  '<button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function convSheet(){
+  var c=CONVS[convState.kind]||CONVS.Length;
+  var v=parseFloat(convState.val);
+  var out='';
+  if(!isNaN(v)){
+    if(convState.kind==='Temperature'){
+      var cel=convState.from===0?v:convState.from===1?(v-32)*5/9:v-273.15;
+      out=convState.to===0?cel:convState.to===1?cel*9/5+32:cel+273.15;
+    } else {
+      out=v*c.base[convState.from]/c.base[convState.to];
+    }
+    out=String(Number(out.toFixed(6)));
+  }
+  return '<h2>Unit Converter</h2>'+
+  '<div class="chips">'+Object.keys(CONVS).map(function(k){
+    return '<button class="chip'+(convState.kind===k?' sel':'')+'" data-a="cvkind" data-v="'+k+'">'+k+'</button>';
+  }).join('')+'</div>'+
+  '<div class="convrow"><input id="cv-val" type="number" value="'+esc(convState.val)+'" placeholder="Value"><button class="convswap" data-a="cvswap">⇄</button><input value="'+esc(out)+'" readonly></div>'+
+  '<div class="two"><select id="cv-from">'+c.units.map(function(u,i){return '<option value="'+i+'"'+(convState.from===i?' selected':'')+'>'+u+'</option>'}).join('')+'</select>'+
+  '<select id="cv-to">'+c.units.map(function(u,i){return '<option value="'+i+'"'+(convState.to===i?' selected':'')+'>'+u+'</option>'}).join('')+'</select></div>'+
+  '<button class="chip" data-a="opensheet" data-t="calc">Back to Calculator</button>'+
+  '<button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function backupSheet(){
+  return '<h2>Backup & Restore</h2><p class="sub">Download all your app data (attendance, notes, projects, schedule, vault photos/PDFs) or restore to a separate new app.</p>'+
+  '<button class="go" data-a="exportall">Download Full App Data Backup</button>'+
+  '<label class="go" style="position:relative;overflow:hidden;margin-top:8px;display:block">Restore / Import Existing Backup File<input type="file" id="import-file" accept=".json,.sappbackup" style="position:absolute;inset:0;opacity:0"></label>'+
+  '<button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function lockUi(){
+  if(cryptoKey)return '<span class="sub">App PIN Lock</span><div class="card sub">App is currently locked & encrypted with your PIN.</div>'+
+    '<button class="chip" data-a="locknow">Lock Now</button><button class="chip danger" data-a="lockoff">Remove PIN Lock</button>';
+  return '<span class="sub">App PIN Lock</span><div class="two"><input id="p1" type="password" inputmode="numeric" placeholder="4+ digit PIN"><input id="p2" type="password" inputmode="numeric" placeholder="Repeat PIN"></div>'+
+    '<button class="chip" data-a="setpin">Enable PIN Encryption Lock</button>';
+}
+
+function sheetHtml(){
+  if(!sheet)return '';
+  var tall=(sheet==='calc'||sheet==='vault'||sheet==='vitem'||sheet==='conv'||sheet==='gpa'||sheet==='backup'||sheet==='login')?' tall':'';
+  var w='<div class="scrim" id="scrim"><div class="sheet'+tall+'">',z='</div></div>';
+  if(sheet==='login')return w+loginForm()+z;
+  if(sheet==='calc')return w+calcSheet()+z;
+  if(sheet==='conv')return w+convSheet()+z;
+  if(sheet==='vault')return w+vaultSheet()+z;
+  if(sheet==='vitem')return w+vitemSheet()+z;
+  if(sheet==='backup')return w+backupSheet()+z;
+  if(sheet==='gpa')return w+gpaSheet()+z;
+  if(sheet==='events')return w+eventsSheet()+z;
+  if(sheet==='settings')return w+'<h2>Settings</h2>'+
+    '<span class="sub">Name</span><input id="st-name" class="cap" value="'+esc(S.name)+'">'+
+    '<span class="sub">Focus Session (minutes)</span><input id="st-focus" type="number" value="'+S.focusLen+'">'+
+    '<span class="sub">Reminder Time (Day before)</span><input id="st-rem" type="time" value="'+esc(S.remind)+'">'+
+    '<span class="sub">Notification Tone</span><select id="tone-n">'+toneOpts(curNotifTone)+'</select>'+
+    '<span class="sub">Timer Sound</span><select id="tone-t">'+toneOpts(curTimerTone)+'</select>'+
+    '<button class="chip" data-a="savetones">Save Sounds</button>'+
+    lockUi()+
+    '<button class="go" data-a="savesettings">Save Settings</button><button class="lnk" data-a="closesheet">Close</button>'+z;
+  return '';
+}
+
+function eventsSheet(){
+  return '<h2>Add Event</h2><input id="ev-title" placeholder="Event / Exam Title">'+
+  '<div class="two"><input id="ev-date" type="date"><input id="ev-time" type="time"></div>'+
+  '<button class="go" data-a="saveev">Save Event</button><button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function gpaSheet(){
+  var tc=0,tp=0;
+  S.gpa.rows.forEach(function(r){var c=parseFloat(r.c)||0;if(c>0){tc+=c;tp+=c*(S.grades[r.g]||0)}});
+  var val=tc?(tp/tc).toFixed(2):'0.00';
+  return '<h2>SGPA Calculator</h2><b style="font-size:32px">'+val+'</b><span class="sub"> ('+tc+' credits)</span>'+
+  S.gpa.rows.map(function(r,i){
+    return '<div class="row"><input class="pd cap" data-gi="'+i+'" data-gf="n" placeholder="Subject" value="'+esc(r.n)+'">'+
+    '<input class="pd" data-gi="'+i+'" data-gf="c" type="number" placeholder="Credits" value="'+esc(r.c)+'" style="width:80px">'+
+    '<select class="pd" data-gi="'+i+'" data-gf="g">'+Object.keys(S.grades).map(function(g){return '<option'+(g===r.g?' selected':'')+'>'+g+'</option>'}).join('')+'</select>'+
+    '<button class="x" data-a="gpadel" data-i="'+i+'">×</button></div>';
+  }).join('')+
+  '<button class="chip" data-a="gpaadd">+ Add Row</button><button class="lnk" data-a="closesheet">Close</button>';
+}
+
+function loginForm(){
+  var p=S.profile||{};
+  return '<h2>Welcome to Sapp</h2><p class="sub">Please complete onboarding. Enter your details below.</p>'+
+  '<span class="sub">Full Name</span><input id="pf-n" class="cap" placeholder="YOUR FULL NAME" value="'+esc(S.name||p.name||'')+'">'+
+  '<span class="sub">Date of Birth (DDMMYYYY)</span><input id="pf-dob" type="tel" maxlength="8" placeholder="DDMMYYYY (e.g. 15082005)" value="'+esc(p.dob||'')+'">'+
+  '<span class="sub">Course</span><input id="pf-c" class="cap" placeholder="B.TECH / DEGREE" value="'+esc(p.course||'')+'">'+
+  '<span class="sub">Branch / Department</span><input id="pf-b" class="cap" placeholder="ELECTRICAL / MECHANICAL" value="'+esc(p.branch||'')+'">'+
+  '<span class="sub">Year / Semester</span><input id="pf-y" class="cap" placeholder="YEAR 1 / SEM 2" value="'+esc(p.year||'')+'">'+
+  '<span class="sub">College / University</span><input id="pf-u" class="cap" placeholder="UNIVERSITY NAME" value="'+esc(p.college||'')+'">'+
+  '<button class="go" data-a="savelogin">Continue</button>';
+}
+
+var curTimerTone='',curNotifTone='',toneList=[];
+function loadTones(){
+  try{if(window.Android&&Android.tones)toneList=JSON.parse(Android.tones()||'[]');}catch(e){toneList=[]}
+  try{if(window.Android&&Android.statusTones){var z=JSON.parse(Android.statusTones());curTimerTone=z.timer||'';curNotifTone=z.notif||''}}catch(e){}
+}
+function toneOpts(sel){
+  return '<option value="">Default</option>'+toneList.map(function(t){return '<option value="'+esc(t.uri)+'"'+(sel===t.uri?' selected':'')+'>'+esc(t.title)+'</option>'}).join('');
+}
+
+function parseSyllabus(txt){
+  var lines=String(txt).split(/\n+/);
+  var currentHeading='',items=[];
+  lines.forEach(function(l){
+    var s=l.trim();if(!s)return;
+    var headingMatch=s.match(/^(\d+[\.\)]|[A-Z]{2,}\s*:|[#]+)\s*(.*)/i);
+    if(headingMatch && !s.includes('[')){
+      if(currentHeading && items.length){
+        S.notes.unshift({id:uid(),title:currentHeading.slice(0,70),body:'',subs:items.slice(0,50)});
+        items=[];
+      }
+      currentHeading=s;
+    } else {
+      var clean=s.replace(/^\[\s*\]\s*/,'').replace(/^-\s*/,'').trim();
+      if(clean.length>1){
+        items.push({id:uid(),t:clean.slice(0,80),done:false});
+      }
+    }
+  });
+  if(currentHeading && items.length){
+    S.notes.unshift({id:uid(),title:currentHeading.slice(0,70),body:'',subs:items.slice(0,50)});
+  } else if(items.length){
+    S.notes.unshift({id:uid(),title:'Syllabus Units',body:'',subs:items.slice(0,50)});
+  }
+  save();toast('Parsed and generated checklist notes!');render();
+}
+
+function loadTess(){
+  if(window.Tesseract)return Promise.resolve(window.Tesseract);
+  return new Promise(function(res,rej){
+    var sc=document.createElement('script');
+    sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    sc.onload=function(){window.Tesseract?res(window.Tesseract):rej()};
+    sc.onerror=rej;
+    document.head.appendChild(sc);
+  });
+}
+
+function readImg(file){
+  return new Promise(function(res,rej){
+    var rd=new FileReader();
+    rd.onload=function(){var im=new Image();im.onload=function(){res(im)};im.onerror=rej;im.src=rd.result};
+    rd.onerror=rej;
+    rd.readAsDataURL(file);
+  });
+}
+
+function drawCanvas(im,max){
+  var k=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(im.width*k));c.height=Math.max(1,Math.round(im.height*k));
+  c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+  return c;
+}
+
+function render(){
+  if(locked){
+    $('app').innerHTML='<div class="card note" style="text-align:center;padding:30px"><h2>Sapp is Locked</h2><p class="sub">Enter your PIN to unlock</p>'+
+    '<input id="unlock-pin" type="password" inputmode="numeric" placeholder="Enter PIN"><button class="go" data-a="unlock">Unlock</button></div>';
+    $('sheet').innerHTML='';return;
+  }
+  $('app').innerHTML=tab==='home'?home():tab==='att'?att():tab==='proj'?proj():tab==='sched'?sched():notes();
+  $('sheet').innerHTML=sheetHtml();
+  document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('on',b.dataset.t===tab)});
+  if(sheet==='vault')loadVaultThumbs();
+  if(sheet==='vitem'&&currentVaultId){
+    idbGet('doc_'+currentVaultId).then(function(u){var el=$('pv-view');if(el&&u)el.src=u});
+  }
+}
+
+var A={
+  tab:function(b){tab=b.dataset.t;render()},
+  opensheet:function(b){sheet=b.dataset.t;render()},
+  closesheet:function(){sheet=null;render()},
+  closetoast:function(b){toasts.splice(+b.dataset.i,1);drawToasts()},
+  timer:function(){
+    if(tmr.run){
+      tmr.run=false;clearInterval(tmr.iv);
+      try{if(window.Android&&Android.timerCancel)Android.timerCancel()}catch(e){}
+    }else{
+      tmr.run=true;tmr.end=Date.now()+tmr.left*1000;
+      tmr.iv=setInterval(tick,500);
+      try{if(window.Android&&Android.timerStart)Android.timerStart(tmr.end,'Focus session')}catch(e){}
+    }
+    render();
+  },
+  addsub:function(){
+    var i=$('nm'),v=i.value.trim();if(!v)return;
+    var s={id:uid(),name:v,present:0,absent:0};S.subjects.push(s);S.sel=s.id;i.value='';save();render();
+  },
+  delsub:function(){
+    S.subjects=S.subjects.filter(function(x){return x.id!==S.sel});
+    S.sel=S.subjects[0]?S.subjects[0].id:null;save();render();
+  },
+  inc:function(b){var s=cur();if(s){s[b.dataset.k]++;save();render()}},
+  dec:function(b){var s=cur();if(s&&s[b.dataset.k]>0){s[b.dataset.k]--;save();render()}},
+  addnote:function(){
+    var i=$('nt'),v=i.value.trim();if(!v)return;
+    S.notes.unshift({id:uid(),title:v,body:'',subs:[]});i.value='';save();render();
+  },
+  delnote:function(b){S.notes=S.notes.filter(function(x){return x.id!==b.dataset.id});save();render()},
+  addproj:function(){
+    var i=$('pn'),v=i.value.trim();if(!v)return;
+    S.projects.unshift({id:uid(),name:v,due:'',subs:[]});i.value='';save();render();
+  },
+  delproj:function(b){S.projects=S.projects.filter(function(x){return x.id!==b.dataset.id});save();render()},
+  addsn:function(b){
+    var id=b.dataset.id,isP=b.dataset.c==='p',list=isP?S.projects:S.notes;
+    var item=list.find(function(x){return x.id===id});
+    var input=document.querySelector('.sin[data-id="'+id+'"]'+(isP?'[data-c="p"]':''));
+    if(!item||!input||!input.value.trim())return;
+    item.subs.push({id:uid(),t:input.value.trim(),done:false});input.value='';save();render();
+  },
+  tog:function(b){
+    var id=b.dataset.id,isP=b.dataset.c==='p',list=isP?S.projects:S.notes;
+    var item=list.find(function(x){return x.id===id});
+    var sub=item&&item.subs.find(function(s){return s.id===b.dataset.s});
+    if(sub){sub.done=!sub.done;save();render()}
+  },
+  rmsn:function(b){
+    var id=b.dataset.id,isP=b.dataset.c==='p',list=isP?S.projects:S.notes;
+    var item=list.find(function(x){return x.id===id});
+    if(item){item.subs=item.subs.filter(function(s){return s.id!==b.dataset.s});save();render()}
+  },
+  saveev:function(){
+    var t=$('ev-title').value.trim(),d=$('ev-date').value,tm=$('ev-time').value;
+    if(!t||!d)return;
+    S.events.push({id:uid(),title:t,date:d,time:tm});save();sheet=null;toast('Event saved!');render();syncNative();
+  },
+  delev:function(b){S.events=S.events.filter(function(x){return x.id!==b.dataset.id});save();render();syncNative()},
+  parsetext:function(){var el=$('syl-text');if(el&&el.value)parseSyllabus(el.value)},
+  calckey:function(b){
+    var v=b.dataset.v;
+    if(v==='C'){calc.e='';calc.r='0';}
+    else if(v==='()'){calc.e+=calc.e.endsWith('(')?')':'(';}
+    else if(v==='NEG'){
+      if(calc.r!=='0'&&calc.r!=='Error'){calc.r=calc.r.startsWith('-')?calc.r.slice(1):'-'+calc.r;calc.e=calc.r;}
+    }
+    else if(v==='='){
+      try{
+        var ans=evalMath(calc.e||calc.r);
+        calc.r=String(Number(ans.toFixed(8)));
+        S.calcHistory.unshift({id:uid(),e:calc.e,r:calc.r});
+        if(S.calcHistory.length>30)S.calcHistory.pop();
+        save();
+      }catch(e){calc.r='Error';}
+    }else{
+      if(calc.r==='Error'||calc.r==='0')calc.e='';
+      calc.e+=v;calc.r=calc.e;
+    }
+    render();
+  },
+  calctogsci:function(){calc.sci=!calc.sci;render()},
+  calchistview:function(){calc.historyMode=true;render()},
+  calchistback:function(){calc.historyMode=false;render()},
+  calchistclear:function(){S.calcHistory=[];save();render()},
+  cvkind:function(b){convState.kind=b.dataset.v;convState.from=0;convState.to=1;render()},
+  cvswap:function(){var t=convState.from;convState.from=convState.to;convState.to=t;render()},
+  vsearchgo:function(){var el=$('v-search');if(el){vaultSearchText=el.value.trim();render()}},
+  vview:function(b){currentVaultId=b.dataset.id;sheet='vitem';render()},
+  vsavetitle:function(){
+    var it=S.vault.find(function(x){return x.id===currentVaultId});
+    var el=$('v-edittitle');if(it&&el){it.title=el.value.trim();save();toast('Title updated');render()}
+  },
+  vdel:function(b){
+    var id=b.dataset.id;
+    S.vault=S.vault.filter(function(x){return x.id!==id});
+    idbDel('doc_'+id);idbDel('th_'+id);save();sheet='vault';toast('Deleted');render();
+  },
+  vdownload:function(b){
+    idbGet('doc_'+b.dataset.id).then(function(dataUri){
+      if(!dataUri)return;
+      var a=document.createElement('a');a.href=dataUri;a.download='Sapp_Doc.pdf';
+      document.body.appendChild(a);a.click();a.remove();
+    });
+  },
+  gpaadd:function(){S.gpa.rows.push({n:'',c:'3',g:'O'});save();render()},
+  gpadel:function(b){S.gpa.rows.splice(+b.dataset.i,1);save();render()},
+  savesettings:function(){
+    var n=$('st-name').value.trim();if(n)S.name=n;
+    var f=parseInt($('st-focus').value,10);if(f>=5&&f<=90)S.focusLen=f;
+    var r=$('st-rem').value;if(r)S.remind=r;
+    save();sheet=null;toast('Settings saved');render();syncNative();
+  },
+  savetones:function(){
+    var t=$('tone-t').value,n=$('tone-n').value;
+    try{if(window.Android&&Android.setTones){Android.setTones(t,n);toast('Tones saved')}}catch(e){}
+  },
+  setpin:function(){
+    var p1=$('p1').value,p2=$('p2').value;
+    if(!p1||p1.length<4||p1!==p2){toast('PINs must match and be 4+ digits');return}
+    saltB=crypto.getRandomValues(new Uint8Array(16));
+    derive(p1,saltB).then(function(k){cryptoKey=k;return saveEnc()}).then(function(){
+      try{localStorage.removeItem(KEY)}catch(e){}
+      toast('PIN lock enabled');render();
+    });
+  },
+  locknow:function(){locked=true;cryptoKey=null;saltB=null;render()},
+  lockoff:function(){
+    cryptoKey=null;saltB=null;locked=false;
+    try{localStorage.removeItem(LK);localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}
+    toast('Lock removed');render();
+  },
+  unlock:function(){
+    var p=$('unlock-pin').value;if(!p)return;
+    openRec(p).then(function(res){
+      cryptoKey=res.k;saltB=res.salt;S=norm(res.o);locked=false;toast('Unlocked');render();
+    }).catch(function(){toast('Incorrect PIN')});
+  },
+  savelogin:function(){
+    var n=$('pf-n').value.trim(),dob=$('pf-dob').value.trim();
+    if(!n){$('pf-n').focus();return}
+    if(!/^\d{8}$/.test(dob)){toast('Enter DOB as DDMMYYYY (e.g. 15082005)');return}
+    S.name=n;
+    S.profile={
+      name:n,dob:dob,course:$('pf-c').value.trim(),
+      branch:$('pf-b').value.trim(),year:$('pf-y').value.trim(),
+      college:$('pf-u').value.trim()
+    };
+    S.profileDone=true;save();sheet=null;toast('Welcome to Sapp!');
+    try{if(window.Android&&Android.welcome)Android.welcome(S.name+', welcome','Have a good day.')}catch(e){}
+    render();
+  },
+  exportall:function(){
+    var data=JSON.stringify(S);
+    var blob=new Blob([data],{type:'application/json'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Sapp_Backup_'+Date.now()+'.sappbackup';
+    document.body.appendChild(a);a.click();a.remove();toast('Backup downloaded');
+  },
+  exportics:function(){
+    var lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Sapp//EN'];
+    S.events.forEach(function(e){
+      var d=e.date.replace(/-/g,'');
+      lines.push('BEGIN:VEVENT','SUMMARY:'+e.title,'DTSTART;VALUE=DATE:'+d,'END:VEVENT');
+    });
+    lines.push('END:VCALENDAR');
+    var ics=lines.join('\r\n');
+    if(window.Android&&Android.saveIcs){Android.saveIcs('Sapp_Schedule.ics',ics);}
+    else{
+      var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([ics],{type:'text/calendar'}));
+      a.download='Sapp_Schedule.ics';document.body.appendChild(a);a.click();a.remove();
+    }
+  }
+};
+
+document.addEventListener('click',function(e){
+  var b=e.target.closest('[data-a]');if(!b)return;
+  var act=b.dataset.a;if(A[act])A[act](b);
+});
+
+document.addEventListener('input',function(e){
+  var t=e.target;
+  if(t.classList.contains('cap'))t.value=t.value.toUpperCase();
+  if(t.id==='qn'){S.scratch=t.value;save()}
+  if(t.dataset.gf){
+    var idx=+t.dataset.gi,field=t.dataset.gf;
+    if(S.gpa.rows[idx])S.gpa.rows[idx][field]=t.value;
+    save();
+  }
+  if(t.id==='cv-val'){convState.val=t.value;render()}
+});
+
+document.addEventListener('change',function(e){
+  var t=e.target;
+  if(t.id==='sel'){S.sel=t.value;save();render()}
+  if(t.id==='cv-from'){convState.from=+t.value;render()}
+  if(t.id==='cv-to'){convState.to=+t.value;render()}
+  if(t.id==='cam-scan'||t.id==='img-scan'){
+    var fl=t.files&&t.files[0];if(!fl)return;
+    toast('Scanning text with OCR engine...');
+    readImg(fl).then(function(im){
+      return loadTess().then(function(T){return T.recognize(drawCanvas(im,1800),'eng')});
+    }).then(function(r){
+      var text=(r&&r.data&&r.data.text)||'';
+      if(!text.trim()){toast('No text detected in photo.');return;}
+      parseSyllabus(text);
+    }).catch(function(){toast('OCR scan failed. Try a clearer picture.')});
+  }
+  if(t.id==='v-file-img'){
+    Array.from(t.files||[]).forEach(function(f){
+      readImg(f).then(function(im){
+        var id=uid(),full=drawCanvas(im,2000).toDataURL('image/jpeg',0.82),th=drawCanvas(im,240).toDataURL('image/jpeg',0.65);
+        idbSet('doc_'+id,full);idbSet('th_'+id,th);
+        S.vault.unshift({id:id,type:'img',title:f.name.replace(/\.[^/.]+$/,''),ts:Date.now()});
+        save();toast('Photo stored in offline vault!');render();
+      });
+    });
+  }
+  if(t.id==='v-file-pdf'){
+    Array.from(t.files||[]).forEach(function(f){
+      var rd=new FileReader();
+      rd.onload=function(){
+        var id=uid();
+        idbSet('doc_'+id,rd.result);
+        S.vault.unshift({id:id,type:'pdf',title:f.name.replace(/\.[^/.]+$/,''),text:f.name,ts:Date.now()});
+        save();toast('PDF stored in vault!');render();
+      };
+      rd.readAsDataURL(f);
+    });
+  }
+  if(t.id==='import-file'){
+    var fl=t.files&&t.files[0];if(!fl)return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      try{
+        var data=JSON.parse(rd.result);
+        S=norm(data);save();sheet=null;toast('Data backup restored successfully!');render();
+      }catch(err){toast('Invalid backup file.')}
+    };
+    rd.readAsText(fl);
+  }
+});
+
+loadTones();
+if(!locked&&!S.profileDone){sheet='login';}
+render();
+window.__flush=function(){if(svT){clearTimeout(svT);flush()}};
+window.addEventListener('pagehide',window.__flush);
+})();
+</script>
+</body>
+</html>
+=====B64 app/planner.jks=====
+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
+dungCNrSjyU9MCHBEvl5J8YCAicQ
+=====B64 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png=====
+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
+6Y9nAAAAAElFTkSuQmCC
+=====B64 app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png=====
+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
+6Y9nAAAAAElFTkSuQmCC
